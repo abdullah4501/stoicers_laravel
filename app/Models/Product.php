@@ -48,4 +48,9 @@ class Product extends Model
             ->map(fn ($path) => asset('storage/'.$path))
             ->all();
     }
+
+    public function orders()
+    {
+        return $this->hasMany(\App\Models\Order::class);
+    }
 }
