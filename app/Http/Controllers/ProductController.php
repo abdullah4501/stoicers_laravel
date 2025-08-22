@@ -17,11 +17,14 @@ class ProductController extends Controller
         return response()->json($products);
     }
 
-    // GET /api/products/{product}  (can use id or slug via route-model-binding tweak if you prefer)
-    public function show(Product $product)
+    public function show($slugOrId)
     {
+        $product = \App\Models\Product::where('slug', $slugOrId)
+            ->orWhere('id', $slugOrId)
+            ->firstOrFail();
         return response()->json($product);
     }
+
 
     // POST /api/products  (protected)
     public function store(Request $request)
@@ -131,4 +134,6 @@ class ProductController extends Controller
 
         return response()->json(['message' => 'Product deleted']);
     }
+
+    
 }

@@ -28,7 +28,8 @@ Route::prefix('customer')->group(function () {
 });
 
 Route::get('/products', [ProductController::class, 'index']);
-Route::get('/products/{product}', [ProductController::class, 'show']);
+Route::get('/products/{slugOrId}', [ProductController::class, 'show']);
+
 
 // Protected write endpoints (choose the guard you want)
 Route::middleware('auth:sanctum')->group(function () {

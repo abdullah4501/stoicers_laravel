@@ -16,10 +16,11 @@ class OrderController extends Controller
     {
         $customer = $request->user('customer-api');
 
-        $orders = Order::with('product')
+        $orders = Order::with('items.product')
             ->where('customer_id', $customer->id)
             ->latest()
             ->paginate(10);
+
 
         return response()->json($orders);
     }
@@ -35,74 +36,68 @@ class OrderController extends Controller
             return response()->json(['message' => 'Unauthorized'], 403);
         }
 
-        return response()->json($order->load('product'));
+       return response()->json($order->load('items.product'));
     }
 
-    /**
-     * Create a new order
-     */
     public function store(Request $request)
     {
-        // If logged in via customer-api, this returns the Customer model; otherwise null
-        $authCustomer = $request->user('customer-api');
-
-        // Trick to use conditional validation: add a synthetic flag to the request
-        $request->merge(['_auth_customer' => $authCustomer?->id]);
-
-        $data = $request->validate([
-            'product_id' => ['required', 'exists:products,id'],
-            'quantity'   => ['nullable', 'integer', 'min:1'],
-
-            // If not authenticated, these are required; if authenticated, optional (can override)
-            'name'       => ['required_without:_auth_customer', 'nullable', 'string', 'max:255'],
-            'email'      => ['required_without:_auth_customer', 'nullable', 'email', 'max:255'],
-            'phone'      => ['required_without:_auth_customer', 'nullable', 'string', 'max:20'],
-            'address'    => ['required_without:_auth_customer', 'nullable', 'string', 'max:500'],
-            'area'       => ['required_without:_auth_customer', 'nullable', 'string', 'max:255'],
-            'city'       => ['required_without:_auth_customer', 'nullable', 'string', 'max:255'],
+        // Validate customer and cart items
+        $request->validate([
+            'items'   => 'required|array|min:1',
+            'name'    => 'required|string|max:255',
+            'email'   => 'required|email|max:255',
+            'phone'   => 'required|string|max:20',
+            'address' => 'nullable|string|max:500',
+            'area'    => 'nullable|string|max:255',
+            'city'    => 'nullable|string|max:255',
         ]);
 
-        $product  = \App\Models\Product::findOrFail($data['product_id']);
-        $quantity = $data['quantity'] ?? 1;
+        $items = $request->input('items');
+        $authCustomer = $request->user('customer-api');
 
-        // If you later add price on Product, use it here; for now keep 0 as earlier
-        $unitPrice  = 0;
-        $totalPrice = $unitPrice * $quantity;
+        // Take customer info either from input or logged-in customer
+        $snapName    = $request->input('name')    ?? $authCustomer?->name;
+        $snapEmail   = $request->input('email')   ?? $authCustomer?->email;
+        $snapPhone   = $request->input('phone')   ?? $authCustomer?->phone;
+        $snapAddress = $request->input('address') ?? $authCustomer?->address;
+        $snapArea    = $request->input('area')    ?? $authCustomer?->area;
+        $snapCity    = $request->input('city')    ?? $authCustomer?->city;
 
-        // Snapshot details: allow overrides even if authenticated
-        $snapName    = $data['name']    ?? $authCustomer?->name;
-        $snapEmail   = $data['email']   ?? $authCustomer?->email;
-        $snapPhone   = $data['phone']   ?? $authCustomer?->phone;
-        $snapAddress = $data['address'] ?? $authCustomer?->address;
-        $snapArea    = $data['area']    ?? $authCustomer?->area;
-        $snapCity    = $data['city']    ?? $authCustomer?->city;
-
-        // Safety: at least ensure we have a name/phone/email snapshot
-        if (!$authCustomer && (!$snapName || !$snapEmail || !$snapPhone)) {
-            return response()->json(['message' => 'Name, email and phone are required for guest checkout.'], 422);
-        }
-
-        $order = \App\Models\Order::create([
-            'customer_id'     => $authCustomer?->id,  // null for guests
-            'product_id'      => $product->id,
+        // Create the order with actual info!
+        $order = Order::create([
+            'customer_id'     => $authCustomer?->id,
             'order_number'    => $this->generateUniqueOrderNumber(),
-            'quantity'        => $quantity,
-            'unit_price'      => $unitPrice,
-            'total_price'     => $totalPrice,
             'status'          => 'pending',
             'payment_status'  => 'unpaid',
-
-            // snapshot fields
             'customer_name'   => $snapName,
             'customer_email'  => $snapEmail,
             'customer_phone'  => $snapPhone,
-            'customer_address'=> $snapAddress,
+            'customer_address' => $snapAddress,
             'customer_area'   => $snapArea,
             'customer_city'   => $snapCity,
+            // 'total_price' will be updated below
         ]);
 
-        return response()->json($order->load('product'), 201);
+        $grandTotal = 0;
+
+        foreach ($items as $cartItem) {
+            $product = Product::findOrFail($cartItem['product_id']);
+            $quantity = max(1, intval($cartItem['quantity']));
+            $orderItem = $order->items()->create([
+                'product_id' => $product->id,
+                'quantity'   => $quantity,
+                'unit_price' => $product->price,
+                'total_price' => $product->price * $quantity,
+            ]);
+            $grandTotal += $orderItem->total_price;
+        }
+
+        $order->update(['total_price' => $grandTotal]);
+
+        return response()->json($order->load('items.product'), 201);
     }
+
+
     public function update(Request $request, Order $order)
     {
         $customer = $request->user('customer-api');
@@ -112,28 +107,24 @@ class OrderController extends Controller
         }
 
         $data = $request->validate([
-            'quantity'       => ['sometimes', 'integer', 'min:1'],
             'status'         => ['sometimes', 'string', 'in:pending,paid,shipped,delivered,cancelled'],
             'payment_status' => ['sometimes', 'string', 'in:unpaid,paid,refunded'],
+            // (Optional: add fields if you want to allow customer info to be updated)
         ]);
-
-        if (isset($data['quantity'])) {
-            $order->quantity = $data['quantity'];
-            $order->total_price = $order->unit_price * $data['quantity'];
-        }
 
         if (isset($data['status'])) {
             $order->status = $data['status'];
         }
-
         if (isset($data['payment_status'])) {
             $order->payment_status = $data['payment_status'];
         }
 
         $order->save();
 
-        return response()->json($order->load('product'));
+        // Return order with all items and their products
+        return response()->json($order->load('items.product'));
     }
+
 
     /**
      * Delete an order (only if it belongs to the logged-in customer)

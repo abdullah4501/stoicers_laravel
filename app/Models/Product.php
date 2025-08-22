@@ -11,6 +11,7 @@ class Product extends Model
         'name',
         'slug',
         'description',
+        'price',
         'featured_image',
         'images',
     ];
@@ -18,6 +19,7 @@ class Product extends Model
     protected $casts = [
         'images' => 'array',
     ];
+    protected $appends = ['featured_image_url'];
 
     // Auto-generate slug on creating if not provided
     protected static function booted()
